@@ -2,14 +2,25 @@ package main
 
 import (
 	"crypto/subtle"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+
 	"github.com/alaingilbert/ogame/pkg/device"
+	"github.com/alaingilbert/ogame/pkg/tlsclientconfig"
 	"github.com/alaingilbert/ogame/pkg/wrapper"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"gopkg.in/urfave/cli.v2"
-	"log"
-	"os"
-	"strconv"
+
+	//MatumboDashboard
+	"html/template"
+	"io"
+	"net/http"
+
+	"github.com/alaingilbert/ogame/pkg/ogame"
+	//	"github.com/alaingilbert/ogame/pkg/utils"
 )
 
 var version = "0.0.0"
@@ -49,6 +60,72 @@ func main() {
 			Value:   "en",
 			Aliases: []string{"l"},
 			EnvVars: []string{"OGAMED_LANGUAGE"},
+		},
+		&cli.StringFlag{
+			Name:    "device-name",
+			Usage:   "Set the Device Name",
+			Value:   "device_name",
+			EnvVars: []string{"OGAMED_DEVICENAME"},
+		},
+		&cli.StringFlag{
+			Name:    "device-system",
+			Usage:   `Set the Device System (Android, Windows, "MacOSX", Linux, iOS)`,
+			Value:   "windows",
+			EnvVars: []string{"OGAMED_DEVICESYSTEM"},
+		},
+		&cli.StringFlag{
+			Name:    "device-browser",
+			Usage:   "Set the Device Browser (Chrome, Opera, Safari, Edge, Firefox)",
+			Value:   "Chrome",
+			EnvVars: []string{"OGAMED_DEVICEBROWSER"},
+		},
+		&cli.IntFlag{
+			Name:    "device-memory",
+			Usage:   "Set the Device Memory",
+			Value:   8,
+			EnvVars: []string{"OGAMED_DEVICEMEMORY"},
+		},
+		&cli.IntFlag{
+			Name:    "device-concurrency",
+			Usage:   "Set the Device Concurrency",
+			Value:   16,
+			EnvVars: []string{"OGAMED_DEVICECONCURRENCY"},
+		},
+		&cli.IntFlag{
+			Name:    "device-color",
+			Usage:   "Set the Device Color depth",
+			Value:   24,
+			EnvVars: []string{"OGAMED_DEVICECOLOR"},
+		},
+		&cli.IntFlag{
+			Name:    "device-width",
+			Usage:   "Set the Device Width",
+			Value:   1900,
+			EnvVars: []string{"OGAMED_DEVICEWIDTH"},
+		},
+		&cli.IntFlag{
+			Name:    "device-height",
+			Usage:   "Set the Device Height",
+			Value:   900,
+			EnvVars: []string{"OGAMED_DEVICHEIGHT"},
+		},
+		&cli.StringFlag{
+			Name:    "device-timezone",
+			Usage:   "Set the Device Timezone",
+			Value:   "America/Los_Angeles",
+			EnvVars: []string{"OGAMED_DEVICETIMEZONE"},
+		},
+		&cli.StringFlag{
+			Name:    "device-lang",
+			Usage:   "Set the Device Language",
+			Value:   "en-US,en",
+			EnvVars: []string{"OGAMED_DEVICELANG"},
+		},
+		&cli.StringFlag{
+			Name:    "device-user-agent",
+			Usage:   "Set the Device User-Agent",
+			Value:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+			EnvVars: []string{"OGAMED_DEVICEUSERAGENT"},
 		},
 		&cli.StringFlag{
 			Name:    "host",
@@ -107,7 +184,7 @@ func main() {
 		&cli.StringFlag{
 			Name:    "api-new-hostname",
 			Usage:   "New OGame Hostname eg: https://someuniverse.example.com",
-			Value:   "http://127.0.0.1:8080",
+			Value:   "",
 			EnvVars: []string{"OGAMED_NEW_HOSTNAME"},
 		},
 		&cli.StringFlag{
@@ -151,17 +228,23 @@ func main() {
 			Usage:   "Ninja API key",
 			Value:   "",
 			EnvVars: []string{"NJA_API_KEY"},
-		}, &cli.StringFlag{
-			Name:    "device-name",
-			Usage:   "Set the Device Name",
-			Value:   "device_name",
-			EnvVars: []string{"OGAMED_DEVICENAME"},
+		},
+		// cookies-filename DEPRECATED Only for compatibility TBot this parameter have to be removed soon!
+		&cli.StringFlag{
+			Name:    "cookies-filename",
+			Usage:   "[DEPRECATED] Path to Cookie File",
+			EnvVars: []string{"OGAMED_COOKIEFILENAME"},
 		},
 	}
 	app.Action = start
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// TemplateRenderer is a custom html/template renderer for Echo framework
+type TemplateRenderer struct {
+	templates *template.Template
 }
 
 func start(c *cli.Context) error {
@@ -187,21 +270,69 @@ func start(c *cli.Context) error {
 	corsEnabled := c.Bool("cors-enabled")
 	njaApiKey := c.String("nja-api-key")
 	deviceName := c.String("device-name")
+	deviceSystem := c.String("device-system")
+	deviceBrowser := c.String("device-browser")
+	deviceMemory := c.Int("device-memory")
+	deviceConcurrency := c.Int("device-concurrency")
+	deviceColor := c.Int("device-color")
+	deviceWidth := c.Int("device-width")
+	deviceHeight := c.Int("device-height")
+	deviceTimezone := c.String("device-timezone")
+	deviceLang := c.String("device-lang")
+	deviceUserAgent := c.String("device-user-agent")
+
+	deviceSystem = strings.ToLower(deviceSystem)
+	var deviceSystemParam device.Os
+	switch deviceSystem {
+	case "android":
+		deviceSystemParam = device.Android
+	case "windows":
+		deviceSystemParam = device.Windows
+	case "macosx":
+		deviceSystemParam = device.MacOSX
+	case "linux":
+		deviceSystemParam = device.Linux
+	case "ios":
+		deviceSystemParam = device.Ios
+	default:
+		deviceSystemParam = device.Windows
+	}
+
+	deviceBrowser = strings.ToLower(deviceBrowser)
+	var deviceBrowserParam device.Browser
+	switch deviceBrowser {
+	case "chrome":
+		deviceBrowserParam = device.Chrome
+	case "opera":
+		deviceBrowserParam = device.Opera
+	case "safari":
+		deviceBrowserParam = device.Safari
+	case "edge":
+		deviceBrowserParam = device.Edge
+	case "firefox":
+		deviceBrowserParam = device.Firefox
+	default:
+		deviceBrowserParam = device.Chrome
+	}
+
 	// TODO: put device config in flags & env variables
 	deviceInst, err := device.NewBuilder(deviceName).
-		SetOsName(device.Windows).
-		SetBrowserName(device.Chrome).
-		SetMemory(8).
-		SetHardwareConcurrency(16).
-		ScreenColorDepth(24).
-		SetScreenWidth(1900).
-		SetScreenHeight(900).
-		SetTimezone("America/Los_Angeles").
-		SetLanguages("en-US,en").
+		SetOsName(deviceSystemParam).
+		SetBrowserName(deviceBrowserParam).
+		SetMemory(deviceMemory).
+		SetHardwareConcurrency(deviceConcurrency).
+		ScreenColorDepth(deviceColor).
+		SetScreenWidth(deviceWidth).
+		SetScreenHeight(deviceHeight).
+		SetTimezone(deviceTimezone).
+		SetLanguages(deviceLang).
+		SetUserAgent(deviceUserAgent).
 		Build()
 	if err != nil {
 		panic(err)
 	}
+
+	tlsclientconfig.AddRoundTripper(deviceInst.GetClient().Transport)
 
 	params := wrapper.Params{
 		Device:         deviceInst,
@@ -228,6 +359,12 @@ func start(c *cli.Context) error {
 	}
 
 	e := echo.New()
+
+	t := &TemplateRenderer{
+		templates: template.Must(template.ParseGlob("template/*.html")),
+	}
+	e.Renderer = t
+
 	if corsEnabled {
 		e.Use(middleware.CORS())
 	}
@@ -256,6 +393,13 @@ func start(c *cli.Context) error {
 	e.Debug = false
 	e.GET("/", wrapper.HomeHandler)
 	e.GET("/tasks", wrapper.TasksHandler)
+
+	// MatumboDashboard
+	e.GET("/empire", HTMLEmpire)
+	//e.GET("/flights", HTMLFlights)
+	e.GET("/planet", HTMLPlanet)
+	e.GET("/browser", HTMLBrowser)
+	e.GET("/browser/user-infos", HTMLExpeditions)
 
 	// CAPTCHA Handler
 	e.GET("/bot/captcha", wrapper.GetCaptchaHandler)
@@ -294,6 +438,8 @@ func start(c *cli.Context) error {
 	e.GET("/bot/espionage-report/:msgid", wrapper.GetEspionageReportHandler)
 	e.GET("/bot/espionage-report/:galaxy/:system/:position", wrapper.GetEspionageReportForHandler)
 	e.GET("/bot/espionage-report", wrapper.GetEspionageReportMessagesHandler)
+	e.GET("/bot/expedition-report", wrapper.GetExpeditionMessagesHandler)
+	// e.GET("/bot/expedition-report/:msgid", wrapper.GetExpeditionReportHandler)
 	e.POST("/bot/delete-report/:messageID", wrapper.DeleteMessageHandler)
 	e.POST("/bot/delete-all-espionage-reports", wrapper.DeleteEspionageMessagesHandler)
 	e.POST("/bot/delete-all-reports/:tabIndex", wrapper.DeleteMessagesFromTabHandler)
@@ -311,8 +457,10 @@ func start(c *cli.Context) error {
 	e.GET("/bot/celestials/:celestialID/items", wrapper.GetCelestialItemsHandler)
 	e.GET("/bot/celestials/:celestialID/items/:itemRef/activate", wrapper.ActivateCelestialItemHandler)
 	e.GET("/bot/celestials/:celestialID/techs", wrapper.TechsHandler)
+	e.GET("/bot/celestials/:celestialID/abandon", wrapper.CelestialAbandonHandler)
 	e.GET("/bot/planets", wrapper.GetPlanetsHandler)
 	e.GET("/bot/planets/:planetID", wrapper.GetPlanetHandler)
+	e.GET("/bot/planets/:planetID/is-under-attack", wrapper.IsUnderAttackByIDHandler)
 	e.GET("/bot/planets/:galaxy/:system/:position", wrapper.GetPlanetByCoordHandler)
 	e.GET("/bot/planets/:planetID/resources-details", wrapper.GetResourcesDetailsHandler)
 	e.GET("/bot/planets/:planetID/resource-settings", wrapper.GetResourceSettingsHandler)
@@ -337,6 +485,7 @@ func start(c *cli.Context) error {
 	e.POST("/bot/planets/:planetID/cancel-research", wrapper.CancelResearchHandler)
 	e.GET("/bot/planets/:planetID/resources", wrapper.GetResourcesHandler)
 	e.POST("/bot/planets/:planetID/send-fleet", wrapper.SendFleetHandler)
+	e.POST("/bot/planets/:planetID/send-discovery", wrapper.SendDiscoveryHandler)
 	e.POST("/bot/planets/:planetID/send-ipm", wrapper.SendIPMHandler)
 	e.GET("/bot/moons/:moonID/phalanx/:galaxy/:system/:position", wrapper.PhalanxHandler)
 	e.POST("/bot/moons/:moonID/jump-gate", wrapper.JumpGateHandler)
@@ -365,9 +514,127 @@ func start(c *cli.Context) error {
 	e.HEAD("/api/*", wrapper.GetStaticHEADHandler) // AntiGame uses this to check if the cached XML files need to be refreshed
 
 	if enableTLS {
-		log.Println("Enable TLS Support")
+		log.Println("Enable TLS Support running encrypted HTTPS Server")
 		return e.StartTLS(host+":"+strconv.Itoa(port), tlsCertFile, tlsKeyFile)
 	}
-	log.Println("Disable TLS Support")
+	log.Println("Disable TLS Support running unencrypted HTTP Server")
 	return e.Start(host + ":" + strconv.Itoa(port))
+}
+
+// Render renders a template document
+func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c echo.Context) error {
+
+	// Add global methods if data is a map
+	if viewContext, isMap := data.(map[string]interface{}); isMap {
+		viewContext["reverse"] = c.Echo().Reverse
+	}
+
+	return t.templates.ExecuteTemplate(w, name, data)
+}
+
+func HTMLEmpire(c echo.Context) error {
+	//bot := c.Get("bot").(*ogame.OGame)
+	bot := c.Get("bot").(*wrapper.OGame)
+	//bot := c.Get("bot").(*OGame)
+	var objs ogame.ObjsStruct
+	var data = struct {
+		//Bot          *ogame.OGame
+		Bot          *wrapper.OGame
+		Objs         ogame.ObjsStruct
+		Buildings    []ogame.Building
+		Ships        []ogame.Ship
+		Technologies []ogame.Technology
+	}{
+		Bot:          bot,
+		Objs:         objs,
+		Buildings:    ogame.Buildings,
+		Ships:        ogame.Ships,
+		Technologies: ogame.Technologies,
+	}
+
+	return c.Render(http.StatusOK, "empire", data)
+}
+
+func HTMLPlanet(c echo.Context) error {
+	//bot := c.Get("bot").(*ogame.OGame)
+	bot := c.Get("bot").(*wrapper.OGame)
+	//bot := c.Get("bot").(*OGame)
+	var objs ogame.ObjsStruct
+
+	planet, _ := strconv.ParseInt(c.QueryParam("id"), 10, 64)
+	var data = struct {
+		//Bot			*ogame.OGame
+		Bot             *wrapper.OGame
+		PlanetID        ogame.PlanetID
+		Objs            ogame.ObjsStruct
+		Buildings       []ogame.Building
+		PlanetBuildings []ogame.Building
+		Ships           []ogame.Ship
+		Defenses        []ogame.Defense
+		Technologies    []ogame.Technology
+		Researches      ogame.Researches
+	}{
+		Bot:             bot,
+		PlanetID:        ogame.PlanetID(planet),
+		Objs:            objs,
+		Buildings:       ogame.Buildings,
+		PlanetBuildings: ogame.PlanetBuildings,
+		Ships:           ogame.Ships,
+		Defenses:        ogame.Defenses,
+		Technologies:    ogame.Technologies,
+		//Researches:      bot.GetResearch(),
+		Researches:      bot.GetCachedResearch(),
+	}
+
+	return c.Render(http.StatusOK, "planet", data)
+}
+
+
+
+func HTMLBrowser(c echo.Context) error {
+	//bot := c.Get("bot").(*ogame.OGame)
+	bot := c.Get("bot").(*wrapper.OGame)
+	//bot := c.Get("bot").(*OGame)
+	var objs ogame.ObjsStruct
+
+	var data = struct {
+		//Bot		 *ogame.OGame
+		Bot          *wrapper.OGame
+		Objs         ogame.ObjsStruct
+		Buildings    []ogame.Building
+		Ships        []ogame.Ship
+		Technologies []ogame.Technology
+	}{
+		Bot:          bot,
+		Objs:         objs,
+		Buildings:    ogame.Buildings,
+		Ships:        ogame.Ships,
+		Technologies: ogame.Technologies,
+	}
+
+	return c.Render(http.StatusOK, "browser", data)
+}
+
+func HTMLExpeditions(c echo.Context) error {
+	//bot := c.Get("bot").(*ogame.OGame)
+	bot := c.Get("bot").(*wrapper.OGame)
+	//bot := c.Get("bot").(*OGame)
+	var objs ogame.ObjsStruct
+
+	var data = struct {
+		//Bot		 *ogame.OGame
+		Bot          *wrapper.OGame
+		Objs         ogame.ObjsStruct
+		Buildings    []ogame.Building
+		Ships        []ogame.Ship
+		Technologies []ogame.Technology
+	}{
+		Bot:          bot,
+		Objs:         objs,
+		Buildings:    ogame.Buildings,
+		Ships:        ogame.Ships,
+		Technologies: ogame.Technologies,
+	}
+
+	return c.Render(http.StatusOK, "user_infos", data)
 }
